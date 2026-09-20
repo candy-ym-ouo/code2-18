@@ -1,4 +1,14 @@
-export const GAME_VERSION = 1;
+import {
+  createInitialPriceTable,
+  ensureContractForLetter,
+  foldCreditBalance,
+  payableForOutcome,
+  postBacklogPenalty,
+  ratesForLetter,
+  settleContractForLetter
+} from './contracts.js';
+
+export const GAME_VERSION = 2;
 export const HUB_ID = 'skyport';
 
 export const HUB_ISLAND = {
@@ -241,7 +251,7 @@ export function createInitialState({ seed = Date.now(), days = 14 } = {}) {
   const letters = generateLettersForDay(normalizedSeed, 1);
   const now = new Date().toISOString();
 
-  return {
+  const state = {
     version: GAME_VERSION,
     seed: normalizedSeed,
     day: 1,
@@ -256,12 +266,21 @@ export function createInitialState({ seed = Date.now(), days = 14 } = {}) {
     couriers: structuredClone(COURIERS),
     relations: buildInitialRelations(),
     letters,
+    priceTables: [createInitialPriceTable()],
+    contracts: [],
+    ledger: [],
+    ledgerSeq: 0,
     history: [],
     lastReport: null,
     ending: null,
     createdAt: now,
     updatedAt: now
   };
+
+  for (const letter of letters) {
+    ensureContractForLetter(state, letter);
+  }
+  return state;
 }
 
 export function normalizeAssignments(assignments = []) {
@@ -442,6 +461,7 @@ function emptyProjection() {
 function collectPlanEffects(state, preparedRoutes, unassignedLetters) {
   const projection = emptyProjection();
   const relationMap = new Map();
+  const creditAmounts = [];
 
   for (const route of preparedRoutes) {
     for (const result of route.letters) {
@@ -456,22 +476,21 @@ function collectPlanEffects(state, preparedRoutes, unassignedLetters) {
         reasons: []
       };
 
+      creditAmounts.push(payableForOutcome(ratesForLetter(state, letter), result.outcome));
+
       if (result.wrong) {
         projection.wrong += 1;
         projection.reputationDelta -= 2 + urgency;
-        projection.creditsDelta -= urgency * 2;
         currentChange.delta -= 3 + urgency * 2;
         currentChange.reasons.push(`${letter.id} 误投至${result.targetName}`);
       } else if (result.late) {
         projection.late += 1;
         projection.reputationDelta -= 1;
-        projection.creditsDelta += Math.max(1, 4 - urgency);
         currentChange.delta += 1;
         currentChange.reasons.push(`${letter.id} 逾时送达`);
       } else {
         projection.onTime += 1;
         projection.reputationDelta += urgency;
-        projection.creditsDelta += urgency * 6;
         currentChange.delta += 1 + urgency;
         currentChange.reasons.push(`${letter.id} 准时送达`);
       }
@@ -484,7 +503,7 @@ function collectPlanEffects(state, preparedRoutes, unassignedLetters) {
     if (letter.lastPenaltyDay === state.day) continue;
     projection.backlog += 1;
     projection.reputationDelta -= urgencyPenalty(letter.urgency);
-    projection.creditsDelta -= letter.urgency;
+    creditAmounts.push(-ratesForLetter(state, letter).backlogPenalty);
   }
 
   projection.reputationDelta = round(
@@ -492,7 +511,7 @@ function collectPlanEffects(state, preparedRoutes, unassignedLetters) {
     1
   );
   projection.creditsDelta = round(
-    Math.max(0, state.credits + projection.creditsDelta) - state.credits,
+    foldCreditBalance(state.credits, creditAmounts) - state.credits,
     1
   );
   projection.relationChanges = [...relationMap.values()]
@@ -558,8 +577,10 @@ export function advanceDay(state, rawAssignments = []) {
 
   const beforeReputation = state.reputation;
   const beforeCredits = state.credits;
+  const ledgerStart = state.ledger.length;
   const assignedIds = new Set(preview.routes.flatMap((route) => route.letters.map((letter) => letter.letterId)));
   const unassignedLetters = getOpenLetters(state).filter((letter) => !assignedIds.has(letter.id));
+  const penalizedLetters = unassignedLetters.filter((letter) => letter.lastPenaltyDay !== state.day);
   const relationChanges = preview.projection.relationChanges;
   const generatedNextDay = state.day < state.days && state.reputation + preview.projection.reputationDelta > 0
     ? state.day + 1
@@ -573,6 +594,8 @@ export function advanceDay(state, rawAssignments = []) {
       letter.deliveredTo = result.targetIslandId;
       letter.outcome = result.outcome;
       letter.deliveryHour = result.arrivalHour;
+      ensureContractForLetter(state, letter);
+      settleContractForLetter(state, letter, result.outcome);
     }
   }
 
@@ -582,6 +605,11 @@ export function advanceDay(state, rawAssignments = []) {
       letter.backlogSince = state.day;
     }
     letter.lastPenaltyDay = state.day;
+  }
+
+  for (const letter of penalizedLetters) {
+    ensureContractForLetter(state, letter);
+    postBacklogPenalty(state, letter);
   }
 
   const appliedRelationChanges = relationChanges.map((change) => {
@@ -596,7 +624,6 @@ export function advanceDay(state, rawAssignments = []) {
   });
 
   state.reputation = clamp(round(state.reputation + preview.projection.reputationDelta, 1), 0, 100);
-  state.credits = Math.max(0, round(state.credits + preview.projection.creditsDelta, 1));
 
   const hadProblem = preview.projection.wrong > 0 || preview.projection.late > 0 || preview.projection.backlog > 0;
   state.streak = hadProblem ? 0 : state.streak + 1;
@@ -612,6 +639,7 @@ export function advanceDay(state, rawAssignments = []) {
     routes: preview.routes,
     unassignedLetterIds: unassignedLetters.map((letter) => letter.id),
     relationChanges: appliedRelationChanges,
+    ledgerEntries: state.ledger.slice(ledgerStart),
     generatedNextDay,
     streak: state.streak
   };
@@ -649,7 +677,11 @@ export function advanceDay(state, rawAssignments = []) {
   } else {
     state.day += 1;
     state.wind = generateWind(state.seed, state.day);
-    state.letters.push(...generateLettersForDay(state.seed, state.day));
+    const nextDayLetters = generateLettersForDay(state.seed, state.day);
+    state.letters.push(...nextDayLetters);
+    for (const letter of nextDayLetters) {
+      ensureContractForLetter(state, letter);
+    }
     report.generatedNextDay = state.day;
   }
 

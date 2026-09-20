@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { gameApi } from './api.js';
+import ContractsPanel from './components/ContractsPanel.jsx';
 import FleetPanel from './components/FleetPanel.jsx';
 import LetterCard from './components/LetterCard.jsx';
 import MapPanel from './components/MapPanel.jsx';
@@ -79,6 +80,9 @@ function App() {
 
   const assignedIds = useMemo(() => new Set(assignments.map((assignment) => assignment.letterId)), [assignments]);
   const unassignedLetters = openLetters.filter((letter) => !assignedIds.has(letter.id));
+  const contractByLetter = useMemo(() => (
+    new Map((game?.contracts ?? []).map((contract) => [contract.letterId, contract]))
+  ), [game]);
 
   function assignLetter(letter, courierId) {
     setAssignments((current) => {
@@ -171,6 +175,50 @@ function App() {
     }
   }
 
+  async function runContractMutation(action) {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await action();
+      setGame(result.state);
+      setPreviewState(null);
+      return result;
+    } catch (requestError) {
+      if (requestError.status === 409) {
+        try {
+          const { state } = await gameApi.getState();
+          setGame(state);
+          setAssignments([]);
+          setPreviewState(null);
+        } catch {
+          // 保留原始冲突提示；下一次操作或刷新会重新同步。
+        }
+      }
+      setError(requestError.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function adjustPrices(rates, note) {
+    const result = await runContractMutation(() => gameApi.adjustPrices(rates, note, game.revision ?? 0));
+    return Boolean(result);
+  }
+
+  async function cancelContract(contractId) {
+    const result = await runContractMutation(() => gameApi.cancelContract(contractId, game.revision ?? 0));
+    if (result?.contract?.letterId) {
+      const cancelledLetterId = result.contract.letterId;
+      setAssignments((current) => current.filter((assignment) => assignment.letterId !== cancelledLetterId));
+    }
+  }
+
+  async function recalculateContract(contractId, outcome) {
+    const result = await runContractMutation(() => gameApi.recalculateContract(contractId, outcome, game.revision ?? 0));
+    return Boolean(result);
+  }
+
   if (loading) {
     return (
       <main className="loading-screen">
@@ -245,6 +293,13 @@ function App() {
             <WeatherPanel wind={game.wind} />
             <RelationsPanel game={game} relationChanges={projection?.relationChanges} />
           </div>
+          <ContractsPanel
+            game={game}
+            busy={busy}
+            onAdjustPrices={adjustPrices}
+            onCancelContract={cancelContract}
+            onRecalculate={recalculateContract}
+          />
         </div>
 
         <div className="planning-column">
@@ -265,7 +320,7 @@ function App() {
                   <p>检查下方航线并执行当日调度。</p>
                 </div>
               ) : unassignedLetters.map((letter) => (
-                <LetterCard key={letter.id} letter={letter} islands={game.islands}>
+                <LetterCard key={letter.id} letter={letter} islands={game.islands} contract={contractByLetter.get(letter.id)}>
                   {letter.status === 'backlog' && <span className="backlog-tag">已积压 {Math.max(0, game.day - letter.day)} 日</span>}
                   <div className="assign-buttons">
                     {game.couriers.map((courier) => (

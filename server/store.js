@@ -1,8 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { GameRuleError, createInitialState, GAME_VERSION } from './engine.js';
+import {
+  DEFAULT_PRICE_RATES,
+  LEDGER_TYPES,
+  RATE_GROUPS,
+  URGENCY_LEVELS,
+  payableForOutcome,
+  snapshotRates
+} from './contracts.js';
 
 const VALID_PHASES = new Set(['planning', 'completed', 'failed']);
+const VALID_CONTRACT_STATUSES = new Set(['open', 'settled', 'cancelled']);
+const VALID_CONTRACT_OUTCOMES = new Set(['on-time', 'late', 'wrong', 'wrong-late']);
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -60,6 +70,67 @@ function hasValidEnding(ending) {
   );
 }
 
+function hasValidRateGroups(rates) {
+  if (!isPlainObject(rates)) return false;
+  return RATE_GROUPS.every((group) => {
+    const groupRates = rates[group];
+    return isPlainObject(groupRates) && URGENCY_LEVELS.every((urgency) => (
+      Number.isFinite(groupRates[urgency]) && groupRates[urgency] >= 0
+    ));
+  });
+}
+
+function hasValidPriceTables(priceTables) {
+  return Array.isArray(priceTables) && priceTables.length > 0 && priceTables.every((table, index) => (
+    isPlainObject(table) &&
+    table.version === index + 1 &&
+    Number.isInteger(table.effectiveDay) &&
+    table.effectiveDay >= 1 &&
+    typeof table.note === 'string' &&
+    hasValidRateGroups(table.rates)
+  ));
+}
+
+function hasValidContracts(contracts) {
+  return Array.isArray(contracts) && hasUniqueIds(contracts) && contracts.every((contract) => (
+    isPlainObject(contract) &&
+    typeof contract.letterId === 'string' &&
+    Number.isInteger(contract.day) &&
+    contract.day >= 1 &&
+    Number.isInteger(contract.urgency) &&
+    contract.urgency >= 1 &&
+    contract.urgency <= 3 &&
+    Number.isInteger(contract.priceVersion) &&
+    contract.priceVersion >= 1 &&
+    isPlainObject(contract.rates) &&
+    RATE_GROUPS.every((group) => Number.isFinite(contract.rates[group])) &&
+    Number.isFinite(contract.quotedAmount) &&
+    VALID_CONTRACT_STATUSES.has(contract.status) &&
+    (contract.outcome === null || VALID_CONTRACT_OUTCOMES.has(contract.outcome)) &&
+    (contract.settledDay === null || Number.isInteger(contract.settledDay)) &&
+    (contract.settledAmount === null || Number.isFinite(contract.settledAmount)) &&
+    (contract.cancelledDay === null || Number.isInteger(contract.cancelledDay))
+  ));
+}
+
+function hasValidLedger(ledger, ledgerSeq) {
+  if (!Array.isArray(ledger) || !Number.isInteger(ledgerSeq)) return false;
+  if (ledgerSeq !== ledger.length) return false;
+  return ledger.every((entry, index) => (
+    isPlainObject(entry) &&
+    entry.id === index + 1 &&
+    Number.isInteger(entry.day) &&
+    entry.day >= 1 &&
+    LEDGER_TYPES.has(entry.type) &&
+    (entry.contractId === null || typeof entry.contractId === 'string') &&
+    (entry.letterId === null || typeof entry.letterId === 'string') &&
+    Number.isFinite(entry.amount) &&
+    Number.isFinite(entry.balanceAfter) &&
+    entry.balanceAfter >= 0 &&
+    typeof entry.note === 'string'
+  ));
+}
+
 function hasValidStateShape(state) {
   if (!isPlainObject(state)) return false;
   if (state.version !== GAME_VERSION) return false;
@@ -74,6 +145,9 @@ function hasValidStateShape(state) {
   if (!Array.isArray(state.islands) || !Array.isArray(state.couriers)) return false;
   if (!Array.isArray(state.letters) || !Array.isArray(state.history)) return false;
   if (!isPlainObject(state.wind) || !isPlainObject(state.relations)) return false;
+  if (!hasValidPriceTables(state.priceTables)) return false;
+  if (!hasValidContracts(state.contracts)) return false;
+  if (!hasValidLedger(state.ledger, state.ledgerSeq)) return false;
   if (!hasValidReport(state.lastReport)) return false;
   if (!hasValidEnding(state.ending)) return false;
   if (state.phase === 'planning' && state.ending != null) return false;
@@ -118,7 +192,7 @@ function hasValidStateShape(state) {
     Number.isInteger(letter.deadlineHour) &&
     typeof letter.sender === 'string' &&
     typeof letter.subject === 'string' &&
-    ['inbox', 'backlog', 'delivered'].includes(letter.status)
+    ['inbox', 'backlog', 'delivered', 'cancelled'].includes(letter.status)
   ))) return false;
 
   if (!Number.isInteger(state.wind.directionIndex) || state.wind.directionIndex < 0 || state.wind.directionIndex > 7) return false;
@@ -138,12 +212,68 @@ function hasValidStateShape(state) {
   return true;
 }
 
+// v1 存档没有合约与账本：按初始牌价补建合约（已送达的按原结果补记结算），
+// 并以一条 opening 记录锚定当前余额，作为后续对账轨迹的起点。
+function migrateV1toV2(parsed) {
+  if (!Array.isArray(parsed.letters) || !Array.isArray(parsed.history) || !isPlainObject(parsed.relations)) {
+    return { state: parsed, changed: false };
+  }
+
+  parsed.version = GAME_VERSION;
+  parsed.priceTables = [{
+    version: 1,
+    effectiveDay: 1,
+    note: '初始牌价（存档迁移）',
+    rates: structuredClone(DEFAULT_PRICE_RATES)
+  }];
+  parsed.contracts = parsed.letters.map((letter) => {
+    const rates = snapshotRates(DEFAULT_PRICE_RATES, letter.urgency);
+    const delivered = letter.status === 'delivered';
+    const outcome = delivered && VALID_CONTRACT_OUTCOMES.has(letter.outcome) ? letter.outcome : null;
+    return {
+      id: `C${String(letter.id).slice(1)}`,
+      letterId: letter.id,
+      day: Number.isInteger(letter.day) ? letter.day : 1,
+      urgency: letter.urgency,
+      priceVersion: 1,
+      rates,
+      quotedAmount: rates.base,
+      status: delivered ? 'settled' : 'open',
+      outcome,
+      settledDay: delivered ? (Number.isInteger(letter.deliveredDay) ? letter.deliveredDay : parsed.day) : null,
+      settledAmount: delivered ? payableForOutcome(rates, outcome ?? 'on-time') : null,
+      cancelledDay: null
+    };
+  });
+  parsed.ledger = [{
+    id: 1,
+    day: parsed.day,
+    type: 'opening',
+    contractId: null,
+    letterId: null,
+    amount: 0,
+    balanceAfter: Math.max(0, Number.isFinite(parsed.credits) ? parsed.credits : 0),
+    note: '旧存档迁移，以此为对账起点'
+  }];
+  parsed.ledgerSeq = 1;
+  return { state: parsed, changed: true };
+}
+
 function normalizeStoredState(parsed) {
-  if (!isPlainObject(parsed) || parsed.version !== GAME_VERSION) {
+  if (!isPlainObject(parsed)) {
     return { state: parsed, changed: false };
   }
 
   let changed = false;
+  if (parsed.version === 1 && GAME_VERSION === 2) {
+    const migrated = migrateV1toV2(parsed);
+    parsed = migrated.state;
+    changed = migrated.changed;
+  }
+  if (parsed.version !== GAME_VERSION) {
+    return { state: parsed, changed };
+  }
+
   if (!Number.isInteger(parsed.revision)) {
     parsed.revision = 0;
     changed = true;

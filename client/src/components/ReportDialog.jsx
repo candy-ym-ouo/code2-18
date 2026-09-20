@@ -1,4 +1,4 @@
-import { formatHour } from '../utils.js';
+import { LEDGER_TYPE_LABELS, formatCredits, formatHour } from '../utils.js';
 
 const OUTCOME = {
   'on-time': '准时',
@@ -65,6 +65,23 @@ export default function ReportDialog({ report, onClose }) {
                     {change.reasons.join('；')}
                     {change.requestedDelta !== undefined && change.requestedDelta !== change.delta ? '（已受关系上下限限制）' : ''}
                   </small>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {report.ledgerEntries?.length > 0 && (
+            <div className="report-section">
+              <h3>邮资对账</h3>
+              {report.ledgerEntries.map((entry) => (
+                <div className="report-ledger-row" key={entry.id}>
+                  <span className="ledger-tag">{LEDGER_TYPE_LABELS[entry.type] || entry.type}</span>
+                  {entry.contractId && <code>{entry.contractId}</code>}
+                  <span className="report-ledger-note">{entry.note}</span>
+                  <b className={entry.amount > 0 ? 'positive' : entry.amount < 0 ? 'negative' : ''}>
+                    {formatCredits(entry.amount, { signed: true })}
+                  </b>
+                  <small>余 {formatCredits(entry.balanceAfter)}</small>
                 </div>
               ))}
             </div>

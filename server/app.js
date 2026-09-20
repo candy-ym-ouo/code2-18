@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { advanceDay, GameRuleError, previewPlan, publicGameState } from './engine.js';
+import { adjustPriceTable, cancelContract, recalculateContract } from './contracts.js';
 import { assertPlanningPhase } from './store.js';
 
 function getAssignments(body) {
@@ -27,6 +28,10 @@ function assertExpectedRevision(state, expectedRevision) {
   if (state.revision !== expectedRevision) {
     throw new GameRuleError('游戏进度已在其他请求中更新，请刷新后再提交。', [], 409);
   }
+}
+
+function bumpRevision(state) {
+  state.revision = Number.isInteger(state.revision) ? state.revision + 1 : 1;
 }
 
 export function createApp({ store, clientDist }) {
@@ -75,6 +80,39 @@ export function createApp({ store, clientDist }) {
       : String(requestedSeed);
     const state = store.reset(seed);
     response.json({ state: publicGameState(state) });
+  });
+
+  app.post('/api/contracts/prices', (request, response) => {
+    const result = store.mutate((state) => {
+      assertPlanningPhase(state);
+      assertExpectedRevision(state, request.body?.expectedRevision);
+      const adjusted = adjustPriceTable(state, request.body?.rates, request.body?.note);
+      bumpRevision(state);
+      return adjusted;
+    });
+    response.json({ ...result, state: publicGameState(store.getState()) });
+  });
+
+  app.post('/api/contracts/:id/cancel', (request, response) => {
+    const result = store.mutate((state) => {
+      assertPlanningPhase(state);
+      assertExpectedRevision(state, request.body?.expectedRevision);
+      const cancelled = cancelContract(state, request.params.id);
+      bumpRevision(state);
+      return cancelled;
+    });
+    response.json({ ...result, state: publicGameState(store.getState()) });
+  });
+
+  app.post('/api/contracts/:id/recalculate', (request, response) => {
+    const result = store.mutate((state) => {
+      assertPlanningPhase(state);
+      assertExpectedRevision(state, request.body?.expectedRevision);
+      const recalculated = recalculateContract(state, request.params.id, { outcome: request.body?.outcome });
+      bumpRevision(state);
+      return recalculated;
+    });
+    response.json({ ...result, state: publicGameState(store.getState()) });
   });
 
   app.use('/api', (request, response) => {

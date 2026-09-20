@@ -27,5 +27,17 @@ export const gameApi = {
   reset: (seed) => request('/api/game/reset', {
     method: 'POST',
     body: JSON.stringify(seed === undefined || seed === null ? {} : { seed })
+  }),
+  adjustPrices: (rates, note, expectedRevision) => request('/api/contracts/prices', {
+    method: 'POST',
+    body: JSON.stringify({ rates, note, expectedRevision })
+  }),
+  cancelContract: (contractId, expectedRevision) => request(`/api/contracts/${contractId}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ expectedRevision })
+  }),
+  recalculateContract: (contractId, outcome, expectedRevision) => request(`/api/contracts/${contractId}/recalculate`, {
+    method: 'POST',
+    body: JSON.stringify({ outcome, expectedRevision })
   })
 };
