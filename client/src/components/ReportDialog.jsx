@@ -70,6 +70,24 @@ export default function ReportDialog({ report, onClose }) {
             </div>
           )}
 
+          {report.contractEvents?.length > 0 && (
+            <div className="report-section">
+              <h3>委托合约自动结算</h3>
+              {report.contractEvents.map((event) => (
+                <div className="relation-change" key={event.id}>
+                  <span>{event.contractTitle}（{event.contractId}）</span>
+                  <b className={event.delta >= 0 ? 'positive' : 'negative'}>
+                    {event.delta >= 0 ? '+' : ''}{Number(event.delta).toFixed(2)}
+                  </b>
+                  <small>{OUTCOME[event.outcome] || event.outcome} · 快照费率 v{event.rateVersion}</small>
+                </div>
+              ))}
+              <p className="report-empty">
+                委托金净额：<b>{Number(report.contractBalance ?? 0).toFixed(2)}</b>（争议可在合约中心重算，原记录保留）
+              </p>
+            </div>
+          )}
+
           {report.unassignedLetterIds.length > 0 && (
             <div className="report-section report-warning">
               <h3>积压邮件</h3>

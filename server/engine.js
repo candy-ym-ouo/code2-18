@@ -1,3 +1,9 @@
+import {
+  autoSettleContracts,
+  createInitialContracts,
+  previewContractSettlements
+} from './contracts.js';
+
 export const GAME_VERSION = 1;
 export const HUB_ID = 'skyport';
 
@@ -256,6 +262,7 @@ export function createInitialState({ seed = Date.now(), days = 14 } = {}) {
     couriers: structuredClone(COURIERS),
     relations: buildInitialRelations(),
     letters,
+    contracts: createInitialContracts(),
     history: [],
     lastReport: null,
     ending: null,
@@ -540,13 +547,22 @@ export function previewPlan(state, rawAssignments = []) {
     if (lateCount) warnings.push(`${route.courierName} 有 ${lateCount} 封预计逾时。`);
   }
 
+  const outcomesByLetter = new Map(
+    preparedRoutes.flatMap((route) => route.letters.map((letter) => [letter.letterId, letter.outcome]))
+  );
+  const contractProjection = previewContractSettlements(state.contracts, outcomesByLetter);
+  if (contractProjection.settlements.length > 0) {
+    warnings.push(`本次结算将自动结清 ${contractProjection.settlements.length} 份邮资委托合约。`);
+  }
+
   return {
     valid: validation.issues.length === 0,
     issues: validation.issues,
     warnings,
     routes: preparedRoutes,
     unassignedLetterIds: unassignedLetters.map((letter) => letter.id),
-    projection
+    projection,
+    contracts: contractProjection
   };
 }
 
@@ -598,6 +614,13 @@ export function advanceDay(state, rawAssignments = []) {
   state.reputation = clamp(round(state.reputation + preview.projection.reputationDelta, 1), 0, 100);
   state.credits = Math.max(0, round(state.credits + preview.projection.creditsDelta, 1));
 
+  const contractEvents = autoSettleContracts(state.contracts, {
+    day: state.day,
+    outcomesByLetter: new Map(preview.routes.flatMap((route) => (
+      route.letters.map((letter) => [letter.letterId, letter.outcome])
+    )))
+  });
+
   const hadProblem = preview.projection.wrong > 0 || preview.projection.late > 0 || preview.projection.backlog > 0;
   state.streak = hadProblem ? 0 : state.streak + 1;
 
@@ -612,6 +635,8 @@ export function advanceDay(state, rawAssignments = []) {
     routes: preview.routes,
     unassignedLetterIds: unassignedLetters.map((letter) => letter.id),
     relationChanges: appliedRelationChanges,
+    contractEvents,
+    contractBalance: state.contracts.ledgerBalance,
     generatedNextDay,
     streak: state.streak
   };

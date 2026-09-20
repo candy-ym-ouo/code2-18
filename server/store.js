@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { GameRuleError, createInitialState, GAME_VERSION } from './engine.js';
+import { createInitialContracts, hasValidContractsShape } from './contracts.js';
 
 const VALID_PHASES = new Set(['planning', 'completed', 'failed']);
 
@@ -74,6 +75,7 @@ function hasValidStateShape(state) {
   if (!Array.isArray(state.islands) || !Array.isArray(state.couriers)) return false;
   if (!Array.isArray(state.letters) || !Array.isArray(state.history)) return false;
   if (!isPlainObject(state.wind) || !isPlainObject(state.relations)) return false;
+  if (!hasValidContractsShape(state.contracts)) return false;
   if (!hasValidReport(state.lastReport)) return false;
   if (!hasValidEnding(state.ending)) return false;
   if (state.phase === 'planning' && state.ending != null) return false;
@@ -144,6 +146,10 @@ function normalizeStoredState(parsed) {
   }
 
   let changed = false;
+  if (!hasValidContractsShape(parsed.contracts)) {
+    parsed.contracts = createInitialContracts();
+    changed = true;
+  }
   if (!Number.isInteger(parsed.revision)) {
     parsed.revision = 0;
     changed = true;

@@ -29,3 +29,31 @@ export const gameApi = {
     body: JSON.stringify(seed === undefined || seed === null ? {} : { seed })
   })
 };
+
+export const contractApi = {
+  list: () => request('/api/contracts'),
+  quote: (payload) => request('/api/contracts/quote', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+  create: (payload, expectedRevision) => request('/api/contracts', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, expectedRevision })
+  }),
+  adjustRates: (tiers, expectedRevision) => request('/api/contracts/rates', {
+    method: 'POST',
+    body: JSON.stringify({ tiers, expectedRevision })
+  }),
+  settle: (contractId, outcome, expectedRevision, reason) => request(`/api/contracts/${contractId}/settle`, {
+    method: 'POST',
+    body: JSON.stringify({ outcome, reason, expectedRevision })
+  }),
+  recalculate: (contractId, outcome, expectedRevision, reason) => request(`/api/contracts/${contractId}/recalculate`, {
+    method: 'POST',
+    body: JSON.stringify({ outcome, reason, expectedRevision })
+  }),
+  cancel: (contractId, stage, expectedRevision, reason) => request(`/api/contracts/${contractId}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ stage, reason, expectedRevision })
+  })
+};

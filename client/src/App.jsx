@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { gameApi } from './api.js';
+import ContractCenter from './components/ContractCenter.jsx';
 import FleetPanel from './components/FleetPanel.jsx';
 import LetterCard from './components/LetterCard.jsx';
 import MapPanel from './components/MapPanel.jsx';
@@ -15,6 +16,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [contractsOpen, setContractsOpen] = useState(false);
   const previewRequest = useRef(0);
 
   useEffect(() => {
@@ -228,7 +230,17 @@ function App() {
           </div>
         </div>
 
-        <button type="button" className="reset-button" onClick={resetGame} disabled={busy}>重新开局</button>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="contracts-button"
+            onClick={() => setContractsOpen(true)}
+            disabled={busy}
+          >
+            邮资委托合约
+          </button>
+          <button type="button" className="reset-button" onClick={resetGame} disabled={busy}>重新开局</button>
+        </div>
       </header>
 
       {error && (
@@ -314,6 +326,12 @@ function App() {
             <span>未安排</span>
             <b>{unassignedLetters.length}</b>
           </div>
+          <div>
+            <span>委托金收付</span>
+            <b className={(preview?.contracts?.payableDelta || 0) >= 0 ? 'positive' : 'negative'}>
+              {(preview?.contracts?.payableDelta || 0) > 0 ? '+' : ''}{preview?.contracts?.payableDelta || 0}
+            </b>
+          </div>
         </div>
         <div className="dock-actions">
           <button type="button" className="clear-button" disabled={busy || assignments.length === 0} onClick={() => setAssignments([])}>
@@ -332,6 +350,16 @@ function App() {
       </aside>
 
       <ReportDialog report={report} onClose={() => setReport(null)} />
+
+      <ContractCenter
+        game={game}
+        open={contractsOpen}
+        onClose={() => setContractsOpen(false)}
+        onState={setGame}
+        onError={setError}
+        busy={busy}
+        setBusy={setBusy}
+      />
 
       {!report && game.ending && (
         <div className="ending-screen">
